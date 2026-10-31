@@ -1,0 +1,117 @@
+{
+  "atomCode": "bitbucket-status",
+  "name": "Bitbucket build status",
+  "version": "1.0.0",
+  "description": "Posts the build state to a Bitbucket Server / Data Center commit and reads it back.",
+  "execution": {
+    "packagePath": "bitbucket-status.jar",
+    "language": "java",
+    "target": "$atom_java_path -cp bitbucket-status.jar com.jenkinschina.atom.sdk.AtomRunner"
+  },
+  "input": {
+    "serverUrl": {
+      "label": "Bitbucket 地址",
+      "type": "vuex-input",
+      "default": ""
+    },
+    "sha": {
+      "label": "提交 sha（留空取 GIT_COMMIT）",
+      "type": "vuex-input",
+      "default": ""
+    },
+    "state": {
+      "label": "状态（留空按 BUILD_STATUS 推断）",
+      "type": "vuex-input",
+      "default": ""
+    },
+    "key": {
+      "label": "构建标识 key（留空用 JOB_NAME）",
+      "type": "vuex-input",
+      "default": ""
+    },
+    "name": {
+      "label": "显示名（留空用 JOB_NAME #BUILD_NUMBER）",
+      "type": "vuex-input",
+      "default": ""
+    },
+    "description": {
+      "label": "描述（留空自动生成）",
+      "type": "vuex-input",
+      "default": ""
+    },
+    "buildUrl": {
+      "label": "构建链接（留空取 BUILD_URL）",
+      "type": "vuex-input",
+      "default": ""
+    },
+    "username": {
+      "label": "用户名（Basic 认证时用）",
+      "type": "vuex-input",
+      "default": ""
+    },
+    "password": {
+      "label": "个人访问令牌或密码（凭据 id，Secret text）",
+      "type": "vuex-input",
+      "default": "",
+      "isSensitive": true
+    },
+    "token": {
+      "label": "HTTP 访问令牌（凭据 id，Secret text；留空则用用户名+密码）",
+      "type": "vuex-input",
+      "default": "",
+      "isSensitive": true
+    },
+    "considerUnstableAsSuccess": {
+      "label": "把 UNSTABLE 报成 SUCCESSFUL",
+      "type": "boolean",
+      "default": "false"
+    },
+    "notifyAborted": {
+      "label": "中止/未构建的构建也上报（已 FAILED）",
+      "type": "boolean",
+      "default": "false"
+    },
+    "includeBuildNumberInKey": {
+      "label": "key 里带上构建号",
+      "type": "boolean",
+      "default": "false"
+    },
+    "verifyAfterWrite": {
+      "label": "写完回读校验",
+      "type": "boolean",
+      "default": "true"
+    }
+  },
+  "output": {
+    "status": {
+      "type": "string",
+      "description": "HTTP 状态码"
+    },
+    "state": {
+      "type": "string",
+      "description": "上报的状态（SUCCESSFUL / FAILED / INPROGRESS / SKIPPED）"
+    },
+    "key": {
+      "type": "string",
+      "description": "实际发送的 key"
+    },
+    "apiUrl": {
+      "type": "string",
+      "description": "实际调用的地址"
+    },
+    "verified": {
+      "type": "string",
+      "description": "回读到的状态"
+    }
+  },
+  "x-jenkins": {
+    "protocol": "jenkins-1",
+    "requires": {
+      "runner": ">=0.4.0"
+    },
+    "secrets": {
+      "token": "",
+      "password": ""
+    }
+  }
+}

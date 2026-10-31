@@ -1,0 +1,11 @@
+{
+  "name": "Bitbucket build status",
+  "summary": "Posts the build state to a Bitbucket Server / Data Center commit and reads it back.",
+  "author": "hummerstudio",
+  "license": "MIT",
+  "tags": [
+    "official-port",
+    "bitbucket-status"
+  ],
+  "homepage": "https://github.com/hummerstudio/jenkins-atom-bitbucket-status"
+}
