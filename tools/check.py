@@ -16,6 +16,8 @@ sent at all.
 """
 import argparse
 import json
+import re
+from urllib.parse import urlsplit
 import os
 import sys
 
@@ -56,6 +58,65 @@ def truthy(value):
     return str(value).strip().lower() == "true"
 
 
+def expand(given, text):
+    """The atom expands ${NAME} from the build parameters; recompute it here rather than trust the atom."""
+    def value(match):
+        return str(given.get(match.group(1), ""))
+    return re.sub(r"\$\{([A-Za-z_][A-Za-z0-9_.-]*)\}", value, text or "")
+
+
+def check_pull_request(args, lines, data, given, state, server):
+    """Judge the pull-request half against the server's own state, not against the atom's report."""
+    action = (given.get("prAction") or "none").strip().lower()
+    comment = expand(given, given.get("comment") or "").strip()
+    pr_calls = [line for line in lines if line[1].startswith("/rest/api/1.0/")]
+    if action == "none" and not comment:
+        if pr_calls:
+            raise Fail(f"no pull-request work was asked for, but {len(pr_calls)} PR call(s) were made")
+        return
+    if not args.pr_url or not args.pr_store:
+        raise Fail("the run asked for pull-request work but the check got no --pr-url/--pr-store")
+
+    pr_path = urlsplit(args.pr_url).path.rstrip("/")
+    wrote = [(line[0], line[1]) for line in pr_calls if line[0] in ("POST", "DELETE")]
+    expected_write = None
+    if action == "approve" and state == "SUCCESSFUL":
+        expected_write = ("POST", pr_path + "/approve")
+    elif action == "approve" and state == "FAILED":
+        expected_write = ("DELETE", pr_path + "/approve")
+    elif action == "decline" and state == "FAILED":
+        expected_write = ("POST", pr_path + "/decline")
+    if action != "none" and state not in ("SUCCESSFUL", "FAILED") and not comment and pr_calls:
+        raise Fail(f"{state} is neither green nor red: the pull request must be left alone, saw {pr_calls}")
+    if expected_write and expected_write not in wrote:
+        raise Fail(f"expected {expected_write[0]} {expected_write[1]}, saw {wrote}")
+    if comment and ("POST", pr_path + "/comments") not in wrote:
+        raise Fail(f"the comment was never posted, saw {wrote}")
+
+    pr = load(args.pr_store, {}) or {}
+    if action == "approve" and state == "SUCCESSFUL" and not pr.get("approved"):
+        raise Fail("the server does not hold an approval after the run")
+    if action == "approve" and state == "FAILED" and pr.get("approved"):
+        raise Fail("the server still holds the approval after a red build")
+    if action == "decline" and state == "FAILED" and pr.get("state") != "DECLINED":
+        raise Fail(f"the pull request is {pr.get('state')}, not DECLINED")
+    if comment:
+        texts = [entry.get("text") for entry in pr.get("comments") or []]
+        if comment not in texts:
+            raise Fail(f"the server's comments {texts!r} do not contain the text the atom was given")
+
+    # what the atom reported has to agree with the state the server actually holds
+    if action != "none" and state in ("SUCCESSFUL", "FAILED"):
+        wanted_action = {"approve": ("approve", "approved"), "decline": ("decline", "declined")}[action]
+        if action == "approve" and state == "FAILED":
+            wanted_action = ("withdraw-approve", "withdrawn")
+        if (data.get("prAction"), data.get("prVerified")) != wanted_action:
+            raise Fail(f"output.json says prAction={data.get('prAction')} prVerified={data.get('prVerified')},"
+                       f" expected {wanted_action}")
+    if comment and not data.get("commentId"):
+        raise Fail("the atom reported no comment id after posting a comment")
+
+
 def main():
     parser = argparse.ArgumentParser()
     parser.add_argument("--run", required=True)
@@ -65,6 +126,8 @@ def main():
     parser.add_argument("--expect", required=True, help="success or error:<code>")
     parser.add_argument("--state", default="")
     parser.add_argument("--no-request", action="store_true")
+    parser.add_argument("--pr-store", default="", help="pr-<port>.json written by the fake Bitbucket")
+    parser.add_argument("--pr-url", default="", help="the pull request REST URL the atom should have used")
     args = parser.parse_args()
 
     given = load(os.path.join(args.run, "input.json"), {})
@@ -130,14 +193,13 @@ def main():
     if os.path.exists(args.log):
         with open(args.log, encoding="utf-8") as handle:
             lines = [line.rstrip("\n").split("\t") for line in handle if line.strip()]
-    posts = [line for line in lines if line[0] == "POST"]
+    commit_path = f"/rest/build-status/1.0/commits/{args.sha}"
+    posts = [line for line in lines if line[0] == "POST" and line[1] == commit_path]
     if len(posts) != 1:
-        raise Fail(f"expected exactly one POST, saw {len(posts)}")
-    if posts[0][1] != f"/rest/build-status/1.0/commits/{args.sha}":
-        raise Fail(f"wrong path {posts[0][1]}")
-    gets = [line for line in lines if line[0] == "GET"]
-    if len(gets) != 1:
-        raise Fail(f"expected one read-back GET, saw {len(gets)}")
+        raise Fail(f"expected exactly one POST to {commit_path}, saw {len(posts)}")
+    commit_gets = [line for line in lines if line[0] == "GET" and line[1] == commit_path]
+    if len(commit_gets) != 1:
+        raise Fail(f"expected one read-back GET of the commit, saw {len(commit_gets)}")
 
     stored = load(args.store, {}) or {}
     entries = stored.get(args.sha) or []
@@ -147,6 +209,7 @@ def main():
     if last != expected:
         raise Fail(f"stored payload {json.dumps(last, ensure_ascii=False, sort_keys=True)}"
                    f" != expected {json.dumps(expected, ensure_ascii=False, sort_keys=True)}")
+    check_pull_request(args, lines, data, given, state, server)
     print(f"ok: {state} key={expected['key']} url={target}")
 
 

@@ -1,6 +1,6 @@
 {
   "name": "Bitbucket build status",
-  "summary": "Posts the build state to a Bitbucket Server / Data Center commit and reads it back.",
+  "summary": "Posts the build state to a Bitbucket commit and reads it back; can also approve, withdraw, decline or comment on the pull request, each with a read-back.",
   "author": "hummerstudio",
   "license": "MIT",
   "tags": [

@@ -23,14 +23,15 @@ stop() {
 }
 trap stop EXIT
 
-# serve <mode> <auth-mode> <credential> [expect-sha] — starts a server on a port the kernel picks
+# serve <mode> <auth-mode> <credential> [expect-sha] [expect-pr] — starts a server on a port the kernel picks
 serve() {
   local out
   port=""
   out="$work/server-$(date +%s%N).out"
   : >"$out"
   python3 tools/fake_bitbucket.py --port 0 --dir "$work" \
-    --mode "$1" --auth-mode "$2" --credential "$3" --expect-sha "${4:-}" >"$out" 2>&1 &
+    --mode "$1" --auth-mode "$2" --credential "$3" --expect-sha "${4:-}" \
+    --expect-pr "${5:-PROJ/parcel/1}" >"$out" 2>&1 &
   server_pid=$!
   for _ in {1..100}; do
     port="$(sed -n 's/^listening \([0-9]*\)$/\1/p' "$out")"
@@ -43,6 +44,9 @@ serve() {
   fi
   store="$work/store-$port.json"
   logfile="$work/log-$port.tsv"
+  prstore="$work/pr-$port.json"
+  base="http://127.0.0.1:$port"
+  prurl="$base/rest/api/1.0/projects/PROJ/repos/parcel/pull-requests/1"
   [ -f "$logfile" ] || fail "the fake Bitbucket wrote no log for port $port"
 }
 
@@ -50,7 +54,8 @@ serve() {
 new_run() { dir="$work/$1"; mkdir -p "$dir"; }
 
 # check <args...> — judge the current run against the fake server's own logs and store
-check() { python3 tools/check.py --run "$dir" --store "$store" --log "$logfile" "$@" || fail "check failed for $dir"; }
+check() { python3 tools/check.py --run "$dir" --store "$store" --log "$logfile" \
+  --pr-store "${prstore:-}" --pr-url "${prurl:-}" "$@" || fail "check failed for $dir"; }
 
 # contains <file> <needle>
 contains() { grep -q "$2" "$1" || fail "$1 does not mention $2"; }
@@ -232,4 +237,113 @@ run "$dir" >/dev/null 2>&1 || fail "build-number key run failed"
 contains "$store" '"key": "parcel-42"'
 stop
 
-echo "smoke ok: 16 scenarios (state mapping, both auth modes, 401/403/404, two lying servers, broken read-back, skipped states, abbreviation)"
+
+## 17. green build approves the pull request; a second run hits "already approved" and the read-back still agrees
+serve normal bearer "bb-token-123"
+new_run pr-approve
+printf '{"serverUrl": "%s", "sha": "%s", "prAction": "approve", "pullRequestUrl": "%s/projects/PROJ/repos/parcel/pull-requests/1/overview"}' "$base" "$sha" "$base" >"$dir/input.json"
+printf '{"token": "bb-token-123"}' >"$dir/.secrets.json"
+run "$dir" >"$dir/log.txt" 2>&1 || fail "approve run failed"
+check --sha "$sha" --expect success
+contains "$dir/output.json" '"prVerified"'
+python3 -c "import json,sys;d=json.load(open(sys.argv[1]))['data'];sys.exit(0 if d['prAction']['value']=='approve' and d['prVerified']['value']=='approved' else 1)" "$dir/output.json" || fail "the approve was not reported as approved"
+: >"$logfile"   # the server keeps one log; this run's requests are what the check judges
+new_run pr-approve-again
+printf '{"serverUrl": "%s", "sha": "%s", "prAction": "approve", "projectKey": "PROJ", "repoSlug": "parcel", "pullRequestId": "1"}' "$base" "$sha" >"$dir/input.json"
+printf '{"token": "bb-token-123"}' >"$dir/.secrets.json"
+run "$dir" >"$dir/log.txt" 2>&1 || fail "the second approve must survive a 409"
+grep -q "409 already approved" "$logfile" || fail "the second approve never hit the 409 path"
+check --sha "$sha" --expect success
+python3 -c "import json,sys;sys.exit(0 if len(json.load(open(sys.argv[1]))['comments'])==0 else 1)" "$prstore" || fail "no comment was expected yet"
+stop
+
+## 18. a red build withdraws the approval it made earlier
+serve normal bearer "bb-token-123"
+new_run pr-withdraw-1
+printf '{"serverUrl": "%s", "sha": "%s", "prAction": "approve", "projectKey": "PROJ", "repoSlug": "parcel", "pullRequestId": "1"}' "$base" "$sha" >"$dir/input.json"
+printf '{"token": "bb-token-123"}' >"$dir/.secrets.json"
+run "$dir" >/dev/null 2>&1 || fail "approve-before-withdraw failed"
+check --sha "$sha" --expect success
+: >"$logfile"
+export BUILD_STATUS=FAILURE
+new_run pr-withdraw
+printf '{"serverUrl": "%s", "sha": "%s", "prAction": "approve", "projectKey": "PROJ", "repoSlug": "parcel", "pullRequestId": "1"}' "$base" "$sha" >"$dir/input.json"
+printf '{"token": "bb-token-123"}' >"$dir/.secrets.json"
+run "$dir" >"$dir/log.txt" 2>&1 || fail "withdraw run failed"
+check --sha "$sha" --expect success --state FAILED
+contains "$logfile" "DELETE	/rest/api/1.0/projects/PROJ/repos/parcel/pull-requests/1/approve"
+python3 -c "import json,sys;d=json.load(open(sys.argv[1]))['data'];sys.exit(0 if d['prAction']['value']=='withdraw-approve' and d['prVerified']['value']=='withdrawn' else 1)" "$dir/output.json" || fail "the withdrawal was not reported"
+stop
+
+## 19. a red build can decline the pull request instead
+serve normal bearer "bb-token-123"
+new_run pr-decline
+printf '{"serverUrl": "%s", "sha": "%s", "prAction": "decline", "projectKey": "PROJ", "repoSlug": "parcel", "pullRequestId": "1"}' "$base" "$sha" >"$dir/input.json"
+printf '{"token": "bb-token-123"}' >"$dir/.secrets.json"
+run "$dir" >/dev/null 2>&1 || fail "decline run failed"
+check --sha "$sha" --expect success --state FAILED
+contains "$prstore" '"state": "DECLINED"'
+stop
+
+export BUILD_STATUS=SUCCESS
+
+## 20. a green build can comment, with ${...} expanded, and the comment is read back by id
+serve normal bearer "bb-token-123"
+new_run pr-comment
+printf '{"serverUrl": "%s", "sha": "%s", "comment": "build ${BUILD_NUMBER} is green on ${JOB_NAME}", "projectKey": "PROJ", "repoSlug": "parcel", "pullRequestId": "1"}' "$base" "$sha" >"$dir/input.json"
+printf '{"token": "bb-token-123"}' >"$dir/.secrets.json"
+run "$dir" >/dev/null 2>&1 || fail "comment run failed"
+check --sha "$sha" --expect success
+contains "$prstore" 'build 42 is green on parcel'
+python3 -c "import json,sys;d=json.load(open(sys.argv[1]))['data'];sys.exit(0 if d['commentId']['value']=='1' and d['prAction']['value']=='none' else 1)" "$dir/output.json" || fail "the comment id was not reported"
+stop
+
+## 21. a 201 whose text the server did not keep must fail the atom (200/201 is not evidence)
+serve pr-lie-comment bearer "bb-token-123"
+new_run pr-lie-comment
+printf '{"serverUrl": "%s", "sha": "%s", "comment": "this text will be truncated by the server", "projectKey": "PROJ", "repoSlug": "parcel", "pullRequestId": "1"}' "$base" "$sha" >"$dir/input.json"
+printf '{"token": "bb-token-123"}' >"$dir/.secrets.json"
+run "$dir" >/dev/null 2>&1 && fail "a comment that was not kept must fail the atom"
+contains "$dir/output.json" "40009"
+contains "$dir/output.json" "lists none with that text"
+stop
+
+## 22. a 200 approve that did not record the approval must fail too
+serve pr-lie-approve bearer "bb-token-123"
+new_run pr-lie-approve
+printf '{"serverUrl": "%s", "sha": "%s", "prAction": "approve", "projectKey": "PROJ", "repoSlug": "parcel", "pullRequestId": "1"}' "$base" "$sha" >"$dir/input.json"
+printf '{"token": "bb-token-123"}' >"$dir/.secrets.json"
+run "$dir" >/dev/null 2>&1 && fail "an approval that was not recorded must fail the atom"
+contains "$dir/output.json" "reports approved=false"
+stop
+
+## 23. an unknown pull request is 404, not a quiet success
+serve normal bearer "bb-token-123" "" "PROJ/parcel/9"
+new_run pr-unknown
+printf '{"serverUrl": "%s", "sha": "%s", "prAction": "approve", "projectKey": "PROJ", "repoSlug": "parcel", "pullRequestId": "1"}' "$base" "$sha" >"$dir/input.json"
+printf '{"token": "bb-token-123"}' >"$dir/.secrets.json"
+run "$dir" >/dev/null 2>&1 && fail "an unknown pull request must fail the atom"
+contains "$dir/output.json" "404"
+stop
+
+## 24. a pull-request action without a pull request is a user error, and nothing is sent
+serve normal bearer "bb-token-123"
+new_run pr-no-target
+printf '{"serverUrl": "%s", "sha": "%s", "prAction": "approve"}' "$base" "$sha" >"$dir/input.json"
+printf '{"token": "bb-token-123"}' >"$dir/.secrets.json"
+run "$dir" >/dev/null 2>&1 && fail "prAction without a target must fail"
+contains "$dir/output.json" "40002"
+[ -s "$logfile" ] && fail "nothing should have been sent for a user error"
+stop
+
+## 25. an in-progress build touches neither the PR nor the comment
+serve normal bearer "bb-token-123"
+new_run pr-inprogress
+printf '{"serverUrl": "%s", "sha": "%s", "state": "INPROGRESS", "prAction": "approve", "comment": "", "projectKey": "PROJ", "repoSlug": "parcel", "pullRequestId": "1"}' "$base" "$sha" >"$dir/input.json"
+printf '{"token": "bb-token-123"}' >"$dir/.secrets.json"
+run "$dir" >/dev/null 2>&1 || fail "in-progress run failed"
+check --sha "$sha" --expect success --state INPROGRESS
+grep -q "/rest/api/1.0/" "$logfile" && fail "an in-progress build must not call the PR API"
+stop
+
+echo "smoke ok: 25 scenarios (state mapping, both auth modes, 401/403/404, two lying servers, broken read-back, skipped states, abbreviation, PR approve/withdraw/decline/comment and their lying servers)"

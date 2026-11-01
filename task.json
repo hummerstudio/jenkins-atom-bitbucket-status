@@ -1,8 +1,8 @@
 {
   "atomCode": "bitbucket-status",
   "name": "Bitbucket build status",
-  "version": "1.0.0",
-  "description": "Posts the build state to a Bitbucket Server / Data Center commit and reads it back.",
+  "version": "1.1.0",
+  "description": "Posts the build state to a Bitbucket Server / Data Center commit, reads it back, and can act on the pull request (approve / withdraw / decline / comment) with a read-back.",
   "execution": {
     "packagePath": "bitbucket-status.jar",
     "language": "java",
@@ -80,6 +80,36 @@
       "label": "写完回读校验",
       "type": "boolean",
       "default": "true"
+    },
+    "pullRequestUrl": {
+      "label": "Pull request 页面地址（可选）",
+      "type": "vuex-input",
+      "default": ""
+    },
+    "projectKey": {
+      "label": "项目 key（PR 动作时要）",
+      "type": "vuex-input",
+      "default": ""
+    },
+    "repoSlug": {
+      "label": "仓库 slug（PR 动作时要）",
+      "type": "vuex-input",
+      "default": ""
+    },
+    "pullRequestId": {
+      "label": "PR 编号（留空取 CHANGE_ID）",
+      "type": "vuex-input",
+      "default": ""
+    },
+    "prAction": {
+      "label": "PR 动作：none / approve（绿批红撤）/ decline（红关）",
+      "type": "vuex-input",
+      "default": "none"
+    },
+    "comment": {
+      "label": "PR 评论（支持 ${VAR}；留空不发）",
+      "type": "vuex-input",
+      "default": ""
     }
   },
   "output": {
@@ -102,6 +132,18 @@
     "verified": {
       "type": "string",
       "description": "回读到的状态"
+    },
+    "prAction": {
+      "type": "string",
+      "description": "实际执行的 PR 动作（none / approve / withdraw-approve / decline）"
+    },
+    "prVerified": {
+      "type": "string",
+      "description": "回读到的 PR 状态（approved / withdrawn / declined / not-checked）"
+    },
+    "commentId": {
+      "type": "string",
+      "description": "回读到的评论 id"
     }
   },
   "x-jenkins": {
