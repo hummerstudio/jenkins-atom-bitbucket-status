@@ -77,8 +77,7 @@ P/R/12 再拼到 `serverUrl` 的 `/rest/api/1.0` 上），或 `projectKey` + `re
 ## 构建与验证
 
 ```bash
-./build.sh
-./tools/smoke.sh
+mvn verify          # -> dist/bitbucket-status/, 加上 src/test/java/atom/BitbucketStatusIT.java
 ```
 
 `tools/fake_bitbucket.py` 是**按协议重写**的 Bitbucket：每个 POST 自己校验路径、凭据、`Content-Type`、五个字段的
@@ -89,9 +88,9 @@ PR 那半边，假 Bitbucket 自己维护 PR 状态机：`POST approve`（已批
 （没批过回 404）、`POST decline`、`comments` 增删查都按 Bitbucket 的形状实现，`GET` 读的就是它自己那份状态。
 `--mode pr-lie-approve` 回 200 但不记批准，`--mode pr-lie-comment` 回 201 但只存前 10 个字符——两个都在断言里被抓住。
 
-`tools/check.py` 是 Python 第二实现：从 `input.json` 独立重算目标 URL 和五个字段（状态映射、缺省文案、截断规则），
-再和请求日志、服务端存盘（含 PR 的 `pr-<port>.json`）、`output.json` 三方比对。25 个场景全绿，含 401/403/404、两个说谎的服务端、坏掉的回读端点、
-被跳过的 ABORTED、255 字符截断、key 带构建号。
+`BitbucketStatusIT` 把 `tools/check.py` 的判断搬进了 Java：从 `input.json` 独立重算目标 URL 和五个字段（状态映射、缺省文案、
+截断规则），再和请求日志、服务端存盘（含 PR 的 `pr-<port>.json`）、`output.json` 三方比对。25 个场景全绿，含 401/403/404、
+两个说谎的服务端、坏掉的回读端点、被跳过的 ABORTED、255 字符截断、key 带构建号。`tools/check.py` 保留为独立的 Python 第二实现。
 
 变异检验（都红在预期那条）：
 - 回读状态比对改 `if (false && ...)` → 红在 `lying-state`
